@@ -386,6 +386,19 @@
   .product-card.dragging { opacity: 0.4; }
   .product-card.dragover { border-color: var(--accent); border-style: dashed; }
 
+  /* FLOATING ADD BUTTON */
+  .fab {
+    position: fixed; bottom: 24px; right: 20px; z-index: 200;
+    width: 56px; height: 56px; border-radius: 50%;
+    background: var(--accent); color: #fff; border: none;
+    font-size: 28px; cursor: pointer; box-shadow: var(--shadow-lg);
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.15s, transform 0.15s;
+    line-height: 1;
+  }
+  .fab:hover { background: var(--accent2); transform: scale(1.08); }
+  .fab:active { transform: scale(0.95); }
+
   @media (max-width: 480px) {
     .main { padding: 12px; }
     .stats-grid { grid-template-columns: repeat(2, 1fr); }
@@ -447,6 +460,7 @@
   </div>
 
   <div class="main" id="mainContent"></div>
+<button class="fab" id="fabAdd" onclick="fabAddProduct()" title="Produkt hinzufügen">＋</button>
 </div>
 
 <!-- PRODUCT MODAL -->
@@ -740,6 +754,7 @@ renderAll();
 function renderAll() {
   renderTabs();
   renderMain();
+  updateFabVisibility();
 }
 
 function renderTabs() {
@@ -1518,12 +1533,27 @@ function dropProduct(event, targetId) {
   save(); renderAll();
 }
 
+// ===== FAB =====
+function fabAddProduct() {
+  // Show FAB only in categories/all view
+  const catId = state.activeCat || (state.categories[0] && state.categories[0].id);
+  openProductModal(null, catId);
+}
+
+function updateFabVisibility() {
+  const fab = document.getElementById('fabAdd');
+  if (!fab) return;
+  // Hide on stats and share views
+  fab.style.display = ['stats','share'].includes(state.activeView) ? 'none' : 'flex';
+}
+
 // ===== HELPERS =====
 function switchView(view, btn) {
   state.activeView = view;
   document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   renderAll();
+  updateFabVisibility();
 }
 
 function setSort(mode) { state.sortMode = mode; renderAll(); }
@@ -1795,6 +1825,11 @@ logConsumption = function(name, amount, unit) {
 
 // Patch saveProduct to add updatedAt timestamps
 const _origSaveProduct = saveProduct;
+
+// Ensure activeCat is valid
+if (!state.activeCat || !state.categories.find(c => c.id === state.activeCat)) {
+  state.activeCat = state.categories[0] ? state.categories[0].id : '';
+}
 
 // Start Supabase sync if code present
 const _initCode = localStorage.getItem('vorrat_shareCode');
