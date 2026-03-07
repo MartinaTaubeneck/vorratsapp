@@ -277,8 +277,12 @@
     z-index: 9000;
     align-items: flex-end;
     justify-content: center;
+    pointer-events: none;
   }
-  .modal-overlay.open { display: flex; }
+  .modal-overlay.open { 
+    display: flex;
+    pointer-events: all;
+  }
   .modal {
     background: var(--card);
     border-radius: 20px 20px 0 0;
@@ -470,7 +474,7 @@
   </div>
 
   <div class="main" id="mainContent"></div>
-<button class="fab" id="fabAdd" title="Produkt hinzufügen">＋</button>
+<button class="fab" id="fabAdd" title="Produkt hinzufügen" ontouchstart="fabAddProduct()" onclick="fabAddProduct()">＋</button>
 </div>
 
 <!-- PRODUCT MODAL -->
@@ -1258,7 +1262,7 @@ function renderInlineProductForm() {
   ).join('');
   
   const tagOptions = state.tags.map(t =>
-    '<span class="tag-sel-item' + (selectedTags.includes(t) ? ' selected' : '') + '" onclick="this.classList.toggle('selected')">' + t + '</span>'
+    '<span class="tag-sel-item' + (selectedTags.includes(t) ? ' selected' : '') + '" onclick="this.classList.toggle(&quot;selected&quot;)">' + t + '</span>'
   ).join('');
 
   const unitOptions = ['Stück','Packung','g','kg','l','ml','Portion','Glas','Dose','Flasche'].map(u =>
@@ -1788,17 +1792,14 @@ function renderProductStatsContent() {
   const rangeLabels = {'30d':'30T','90d':'90T','1y':'1J','3y':'3J','5y':'5J','10y':'10J','all':'Alles'};
   const rangeFullLabels = {'30d':'30 Tage','90d':'90 Tage','1y':'1 Jahr','3y':'3 Jahre','5y':'5 Jahre','10y':'10 Jahre','all':'Gesamt'};
 
-  // Filter data
   const cutoff = getPsCutoff();
   const allEntries = state.consumption.filter(e => e.name === psProductName);
   const entries = cutoff ? allEntries.filter(e => new Date(e.date) >= cutoff) : allEntries;
 
-  // KPIs
   const totalAmt = entries.reduce((s,e) => s + e.amount, 0);
   const firstEntry = allEntries.length ? allEntries.reduce((a,b) => new Date(a.date) < new Date(b.date) ? a : b) : null;
   const lastEntry = allEntries.length ? allEntries.reduce((a,b) => new Date(a.date) > new Date(b.date) ? a : b) : null;
 
-  // Monthly average
   let monthlyAvg = 0;
   if (entries.length) {
     const dates = entries.map(e => new Date(e.date));
@@ -1807,7 +1808,6 @@ function renderProductStatsContent() {
     monthlyAvg = totalAmt / months;
   }
 
-  // Time-series buckets
   const buckets = {};
   entries.forEach(e => {
     const d = new Date(e.date);
@@ -1821,88 +1821,76 @@ function renderProductStatsContent() {
   const chartVals = chartKeys.map(k => filledBuckets[k]);
   const chartMax = Math.max(...chartVals, 1);
 
-  // Yearly breakdown
   const byYear = {};
   allEntries.forEach(e => {
     const yr = new Date(e.date).getFullYear();
     byYear[yr] = (byYear[yr]||0) + e.amount;
   });
   const years = Object.keys(byYear).sort().reverse();
-
-  // Current stock
   const prod = state.products.find(p => p.name === psProductName);
 
-  let html = '';
+  // Build HTML using array join to avoid quote issues
+  const parts = [];
 
-  // Range selector
-  html += '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:12px">';
+  // Range buttons
+  parts.push('<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:12px">');
   ['30d','90d','1y','3y','5y','10y','all'].forEach(r => {
-    html += '<button class="sort-btn' + (psRange===r?' active':'') + '" onclick="setPsRange('' + r + '')">' + rangeLabels[r] + '</button>';
+    const active = psRange===r ? ' active' : '';
+    parts.push('<button class="sort-btn' + active + '" onclick="setPsRange(\'' + r + '\')">' + rangeLabels[r] + '</button>');
   });
-  html += '</div>';
-  html += '<div style="display:flex;gap:5px;margin-bottom:16px">';
-  html += '<button class="sort-btn' + (psChartMode==='month'?' active':'') + '" onclick="setPsChartMode('month')">Monatlich</button>';
-  html += '<button class="sort-btn' + (psChartMode==='year'?' active':'') + '" onclick="setPsChartMode('year')">Jährlich</button>';
-  html += '</div>';
+  parts.push('</div>');
+
+  parts.push('<div style="display:flex;gap:5px;margin-bottom:16px">');
+  parts.push('<button class="sort-btn' + (psChartMode==="month"?" active":"") + '" onclick="setPsChartMode(\"month\")">Monatlich</button>');
+  parts.push('<button class="sort-btn' + (psChartMode==="year"?" active":"") + '" onclick="setPsChartMode(\"year\")">Jährlich</button>');
+  parts.push('</div>');
 
   // KPI cards
-  html += '<div class="stats-grid" style="margin-bottom:16px">';
-  html += '<div class="stat-card"><div class="stat-num" style="font-size:22px">' + Math.round(totalAmt*10)/10 + '</div><div class="stat-label">' + (psProductUnit||'Einh.') + ' verbraucht</div><div class="stat-sub">' + rangeFullLabels[psRange] + '</div></div>';
-  html += '<div class="stat-card"><div class="stat-num" style="font-size:22px">' + entries.length + '</div><div class="stat-label">Buchungen</div><div class="stat-sub">' + rangeFullLabels[psRange] + '</div></div>';
-  html += '<div class="stat-card"><div class="stat-num" style="font-size:22px">' + (Math.round(monthlyAvg*10)/10 || '–') + '</div><div class="stat-label">Ø pro Monat</div><div class="stat-sub">' + (psProductUnit||'') + '</div></div>';
+  parts.push('<div class="stats-grid" style="margin-bottom:16px">');
+  parts.push('<div class="stat-card"><div class="stat-num" style="font-size:22px">' + Math.round(totalAmt*10)/10 + '</div><div class="stat-label">' + (psProductUnit||'Einh.') + ' verbraucht</div><div class="stat-sub">' + rangeFullLabels[psRange] + '</div></div>');
+  parts.push('<div class="stat-card"><div class="stat-num" style="font-size:22px">' + entries.length + '</div><div class="stat-label">Buchungen</div></div>');
+  parts.push('<div class="stat-card"><div class="stat-num" style="font-size:22px">' + (Math.round(monthlyAvg*10)/10 || '–') + '</div><div class="stat-label">Ø / Monat</div></div>');
   if (prod) {
-    html += '<div class="stat-card"><div class="stat-num" style="font-size:22px;color:var(--accent)">' + (parseFloat(prod.qty)||0) + '</div><div class="stat-label">Aktueller Bestand</div><div class="stat-sub">' + (prod.unit||'') + '</div></div>';
+    parts.push('<div class="stat-card"><div class="stat-num" style="font-size:22px;color:var(--accent)">' + (parseFloat(prod.qty)||0) + '</div><div class="stat-label">Bestand</div><div class="stat-sub">' + (prod.unit||'') + '</div></div>');
   }
-  html += '</div>';
+  parts.push('</div>');
 
-  // Reichweite (wie lange reicht Bestand)
   if (prod && monthlyAvg > 0 && parseFloat(prod.qty) > 0) {
-    const months = parseFloat(prod.qty) / monthlyAvg;
-    const days = Math.round(months * 30);
-    html += '<div class="alert-bar" style="background:var(--green-bg);border-color:var(--green);color:var(--green);margin-bottom:14px">';
-    html += '📦 Aktueller Vorrat reicht ca. <strong>' + days + ' Tage</strong> bei aktuellem Verbrauch';
-    html += '</div>';
+    const days = Math.round(parseFloat(prod.qty) / monthlyAvg * 30);
+    parts.push('<div class="alert-bar" style="background:var(--green-bg);border-color:var(--green);color:var(--green);margin-bottom:14px">📦 Vorrat reicht ca. <strong>' + days + ' Tage</strong></div>');
   }
 
-  // Chart
   if (chartKeys.length > 0) {
-    html += '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:14px;overflow-x:auto">';
-    html += '<div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:10px">Verbrauch pro ' + (psChartMode==='year'?'Jahr':'Monat') + '</div>';
-    html += '<div style="min-width:' + Math.max(chartKeys.length*36,200) + 'px">';
-    html += renderBarChart(chartKeys, chartVals, chartMax);
-    html += '</div></div>';
+    parts.push('<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:14px;overflow-x:auto">');
+    parts.push('<div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:10px">Verbrauch pro ' + (psChartMode==='year'?'Jahr':'Monat') + '</div>');
+    parts.push('<div style="min-width:' + Math.max(chartKeys.length*36,200) + 'px">');
+    parts.push(renderBarChart(chartKeys, chartVals, chartMax));
+    parts.push('</div></div>');
   }
 
-  // Yearly table
   if (years.length > 0) {
-    html += '<div style="font-size:13px;font-weight:600;color:var(--text2);margin:12px 0 8px">Jahresübersicht</div>';
-    html += '<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;margin-bottom:16px">';
-    html += '<table style="width:100%;border-collapse:collapse;font-size:13px">';
-    html += '<thead><tr style="background:var(--bg2)"><th style="padding:8px 14px;text-align:left;color:var(--text2)">Jahr</th><th style="padding:8px 14px;text-align:right;color:var(--text2)">' + (psProductUnit||'Einh.') + '</th><th style="padding:8px 14px;text-align:right;color:var(--text2)">Buchungen</th></tr></thead><tbody>';
+    parts.push('<div style="font-size:13px;font-weight:600;color:var(--text2);margin:12px 0 8px">Jahresübersicht</div>');
+    parts.push('<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;margin-bottom:16px">');
+    parts.push('<table style="width:100%;border-collapse:collapse;font-size:13px">');
+    parts.push('<thead><tr style="background:var(--bg2)"><th style="padding:8px 14px;text-align:left;color:var(--text2)">Jahr</th><th style="padding:8px 14px;text-align:right;color:var(--text2)">' + (psProductUnit||'Einh.') + '</th><th style="padding:8px 14px;text-align:right;color:var(--text2)">Buchungen</th></tr></thead><tbody>');
     years.forEach((yr, i) => {
       const bk = allEntries.filter(e => new Date(e.date).getFullYear() == yr).length;
-      html += '<tr style="border-top:1px solid var(--border);' + (i%2===1?'background:var(--bg2)':'') + '">';
-      html += '<td style="padding:8px 14px;font-weight:600;color:var(--accent)">' + yr + '</td>';
-      html += '<td style="padding:8px 14px;text-align:right">' + Math.round(byYear[yr]*10)/10 + '</td>';
-      html += '<td style="padding:8px 14px;text-align:right;color:var(--text2)">' + bk + '</td>';
-      html += '</tr>';
+      parts.push('<tr style="border-top:1px solid var(--border);' + (i%2===1?'background:var(--bg2)':'') + '">');
+      parts.push('<td style="padding:8px 14px;font-weight:600;color:var(--accent)">' + yr + '</td>');
+      parts.push('<td style="padding:8px 14px;text-align:right">' + Math.round(byYear[yr]*10)/10 + '</td>');
+      parts.push('<td style="padding:8px 14px;text-align:right;color:var(--text2)">' + bk + '</td>');
+      parts.push('</tr>');
     });
-    html += '</tbody></table></div>';
+    parts.push('</tbody></table></div>');
   }
 
-  // First/last seen
   if (firstEntry) {
-    html += '<div style="font-size:12px;color:var(--text3);line-height:2">';
-    html += '🗓️ Erste Buchung: <strong>' + new Date(firstEntry.date).toLocaleDateString('de-DE') + '</strong>';
-    if (lastEntry && lastEntry.date !== firstEntry.date) {
-      html += ' &nbsp;·&nbsp; Letzte: <strong>' + new Date(lastEntry.date).toLocaleDateString('de-DE') + '</strong>';
-    }
-    html += '</div>';
+    parts.push('<div style="font-size:12px;color:var(--text3);line-height:2">🗓️ Erste Buchung: <strong>' + new Date(firstEntry.date).toLocaleDateString('de-DE') + '</strong></div>');
   } else {
-    html += '<div style="text-align:center;padding:24px;color:var(--text3)">📭 Noch keine Verbrauchsdaten für dieses Produkt</div>';
+    parts.push('<div style="text-align:center;padding:24px;color:var(--text3)">📭 Noch keine Verbrauchsdaten</div>');
   }
 
-  el.innerHTML = html;
+  el.innerHTML = parts.join('');
 }
 
 function getPsCutoff() {
@@ -2002,20 +1990,6 @@ const _origSaveProduct = saveProduct;
 // Ensure activeCat is valid
 if (!state.activeCat || !state.categories.find(c => c.id === state.activeCat)) {
   state.activeCat = state.categories[0] ? state.categories[0].id : '';
-}
-
-// Fix FAB touch on Android
-const _fab = document.getElementById('fabAdd');
-if (_fab) {
-  _fab.addEventListener('touchend', function(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    fabAddProduct();
-  }, {passive: false});
-  _fab.addEventListener('click', function(e) {
-    e.preventDefault();
-    fabAddProduct();
-  });
 }
 
 // Start Supabase sync if code present
