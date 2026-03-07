@@ -266,29 +266,26 @@
 
   /* MODAL */
   .modal-overlay {
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    width: 100%; height: 100%;
-    background: rgba(0,0,0,0.6);
-    z-index: 9998;
     display: none;
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    background: rgba(0,0,0,0.6);
+    z-index: 9000;
     align-items: flex-end;
     justify-content: center;
   }
-  .modal-overlay.open {
-    display: flex !important;
-  }
+  .modal-overlay.open { display: flex; }
   .modal {
     background: var(--card);
     border-radius: 20px 20px 0 0;
     width: 100%;
     max-width: 600px;
     padding: 24px 20px 60px;
-    max-height: 88vh;
-    overflow-y: scroll;
-    -webkit-overflow-scrolling: touch;
+    max-height: 85vh;
+    overflow-y: auto;
+    z-index: 9001;
     position: relative;
-    z-index: 9999;
   }
   .modal-title {
     font-family: 'Fraunces', serif; font-size: 20px; font-weight: 700;
@@ -1584,24 +1581,15 @@ function toggleDark() {
 }
 
 function openModal(id) {
-  const overlay = document.getElementById(id);
-  if (!overlay) { console.error('Modal not found:', id); return; }
-  overlay.classList.add('open');
-  const modal = overlay.querySelector('.modal');
-  if (modal) { modal.scrollTop = 0; }
-  document.body.style.overflow = 'hidden';
-  document.body.style.position = 'fixed';
-  document.body.style.width = '100%';
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.add('open');
+  const m = el.querySelector('.modal');
+  if (m) m.scrollTop = 0;
 }
 function closeModal(id) {
-  const overlay = document.getElementById(id);
-  if (overlay) overlay.classList.remove('open');
-  const anyOpen = document.querySelectorAll('.modal-overlay.open').length > 0;
-  if (!anyOpen) {
-    document.body.style.overflow = '';
-    document.body.style.position = '';
-    document.body.style.width = '';
-  }
+  const el = document.getElementById(id);
+  if (el) el.classList.remove('open');
 }
 
 function showToast(msg) {
@@ -1874,7 +1862,9 @@ if ('serviceWorker' in navigator) {
 
 // Close modals on overlay click
 document.querySelectorAll('.modal-overlay').forEach(overlay => {
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.classList.remove('open'); });
+  overlay.addEventListener('click', function(e) {
+    if (e.target === this) this.classList.remove('open');
+  });
 });
 
 // Apply dark mode on load
