@@ -9,6 +9,9 @@
 <meta name="apple-mobile-web-app-title" content="Vorrat">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>🥫 Vorratsapp</title>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,700;1,9..144,300&family=DM+Sans:wght@300;400;500;600&display=swap');
 
@@ -467,7 +470,7 @@
   </div>
 
   <div class="main" id="mainContent"></div>
-<button class="fab" id="fabAdd" onclick="fabAddProduct()" title="Produkt hinzufügen">＋</button>
+<button class="fab" id="fabAdd" title="Produkt hinzufügen">＋</button>
 </div>
 
 <!-- PRODUCT MODAL -->
@@ -1999,6 +2002,20 @@ const _origSaveProduct = saveProduct;
 // Ensure activeCat is valid
 if (!state.activeCat || !state.categories.find(c => c.id === state.activeCat)) {
   state.activeCat = state.categories[0] ? state.categories[0].id : '';
+}
+
+// Fix FAB touch on Android
+const _fab = document.getElementById('fabAdd');
+if (_fab) {
+  _fab.addEventListener('touchend', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    fabAddProduct();
+  }, {passive: false});
+  _fab.addEventListener('click', function(e) {
+    e.preventDefault();
+    fabAddProduct();
+  });
 }
 
 // Start Supabase sync if code present
