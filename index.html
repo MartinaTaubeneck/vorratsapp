@@ -721,6 +721,24 @@ function load() {
       state = Object.assign(state, parsed);
     }
   } catch(e) {}
+  // Always ensure default categories exist
+  if (!state.categories || state.categories.length === 0) {
+    state.categories = [
+      {id:'c1', name:'Speisekammer', emoji:'🏠'},
+      {id:'c2', name:'Tiefkühler', emoji:'❄️'},
+      {id:'c3', name:'Dachboden', emoji:'🏚️'},
+      {id:'c4', name:'Haushalt', emoji:'🧴'},
+      {id:'c5', name:'Sonstiges', emoji:'📦'},
+    ];
+  }
+  // Always ensure activeCat is valid
+  if (!state.activeCat || !state.categories.find(c => c.id === state.activeCat)) {
+    state.activeCat = state.categories[0].id;
+  }
+  // Always ensure tags exist
+  if (!state.tags || state.tags.length === 0) {
+    state.tags = ['Eingekocht','Nudeln','Konserven','Gewürze','Fleisch','TK-Gemüse','Backwaren','Mehl/Zucker/Ähnliche','Soßen'];
+  }
 }
 
 // ===== SHARED STORAGE (simulated via key-based storage) =====
@@ -793,6 +811,8 @@ function renderMain() {
   if (state.activeView === 'stats') { main.innerHTML = renderStats(); return; }
   if (state.activeView === 'share') { main.innerHTML = renderShare(); return; }
   if (state.activeView === 'all') { main.innerHTML = renderAllProducts(); return; }
+  // add product view
+  if (state.activeView === 'addProduct') { main.innerHTML = renderInlineProductForm(); return; }
   // categories view
   const cat = state.categories.find(c => c.id === state.activeCat);
   if (!cat) { main.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📦</div><div class="empty-state-text">Keine Kategorie ausgewählt</div></div>'; return; }
@@ -893,7 +913,7 @@ function renderProductList(catId) {
       <div class="product-row1">
         <div class="drag-handle" title="Ziehen zum Sortieren">⠿</div>
         <div class="product-icon">${p.emoji || '📦'}</div>
-        <div class="product-info" onclick="openProductModal('${p.id}','${catId}')">
+        <div class="product-info" onclick="openInlineEdit('${p.id}')">
           <div class="product-name">${p.name}</div>
           <div class="product-meta">
             <span class="product-qty${isEmpty?' zero':''}">${qty} ${p.unit||'Stück'}</span>
@@ -936,7 +956,7 @@ function renderAllProducts() {
       else if (mhdDate <= warnDate) { mhdClass = 'warn'; mhdText = `⚠️ ${formatDate(p.mhd)}`; }
       else { mhdText = formatDate(p.mhd); }
     }
-    html += `<div class="product-card${isEmpty?' empty':''}" onclick="openProductModal('${p.id}','${p.catId}')">
+    html += `<div class="product-card${isEmpty?' empty':''}" onclick="openInlineEdit('${p.id}')">
       <div class="product-row1">
         <div class="product-icon">${p.emoji||'📦'}</div>
         <div class="product-info">
@@ -1223,6 +1243,135 @@ function renderYearlyTable() {
 
   html += `</tbody></table></div>`;
   return html;
+}
+
+function renderInlineProductForm() {
+  const p = state._editProductId ? state.products.find(x => x.id === state._editProductId) : null;
+  const catId = state._addCatId || state.activeCat;
+  const selectedTags = p ? (p.tags || []) : [];
+  
+  const catOptions = state.categories.map(c => 
+    '<option value="' + c.id + '"' + ((p ? p.catId : catId) === c.id ? ' selected' : '') + '>' + c.emoji + ' ' + c.name + '</option>'
+  ).join('');
+  
+  const tagOptions = state.tags.map(t =>
+    '<span class="tag-sel-item' + (selectedTags.includes(t) ? ' selected' : '') + '" onclick="this.classList.toggle('selected')">' + t + '</span>'
+  ).join('');
+
+  const unitOptions = ['Stück','Packung','g','kg','l','ml','Portion','Glas','Dose','Flasche'].map(u =>
+    '<option' + ((p && p.unit === u) ? ' selected' : '') + '>' + u + '</option>'
+  ).join('');
+
+  return `
+  <div style="padding-bottom:80px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+      <button onclick="cancelAddProduct()" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:8px 14px;cursor:pointer;font-size:14px;color:var(--text2)">← Zurück</button>
+      <div style="font-family:'Fraunces',serif;font-size:18px;font-weight:700">${p ? 'Produkt bearbeiten' : 'Produkt hinzufügen'}</div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Name *</label>
+      <input class="form-input" id="ipName" placeholder="z.B. Tomaten, Spaghetti…" value="${p ? p.name : ''}">
+    </div>
+    <div style="display:flex;gap:10px">
+      <div class="form-group" style="flex:1">
+        <label class="form-label">Menge</label>
+        <input class="form-input" id="ipQty" type="number" min="0" step="0.5" placeholder="0" value="${p ? p.qty : ''}">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label class="form-label">Einheit</label>
+        <select class="form-select" id="ipUnit">${unitOptions}</select>
+      </div>
+    </div>
+    <div style="display:flex;gap:10px">
+      <div class="form-group" style="flex:1">
+        <label class="form-label">Mindestbestand</label>
+        <input class="form-input" id="ipMinQty" type="number" min="0" step="0.5" placeholder="0" value="${p ? (p.minQty||'') : ''}">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label class="form-label">Kategorie</label>
+        <select class="form-select" id="ipCategory">${catOptions}</select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">MHD</label>
+      <input class="form-input" id="ipMHD" type="date" value="${p ? (p.mhd||'') : ''}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Tags</label>
+      <div class="tag-selector" id="ipTags">${tagOptions}</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Notiz</label>
+      <textarea class="form-textarea" id="ipNote" placeholder="z.B. selbst eingekocht Sept. 2024…">${p ? (p.note||'') : ''}</textarea>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Symbol (Emoji)</label>
+      <input class="form-input" id="ipEmoji" placeholder="🍅" maxlength="4" value="${p ? (p.emoji||'') : ''}">
+    </div>
+    <button onclick="saveInlineProduct()" style="background:var(--accent);color:#fff;border:none;border-radius:10px;padding:14px;font-size:16px;width:100%;cursor:pointer;font-weight:600;margin-top:8px">✅ Speichern</button>
+    ${p ? '<button onclick="deleteInlineProduct()" style="background:var(--red-bg);color:var(--red);border:1px solid var(--red);border-radius:10px;padding:14px;font-size:16px;width:100%;cursor:pointer;margin-top:10px">🗑️ Löschen</button>' : ''}
+  </div>`;
+}
+
+function openInlineEdit(productId) {
+  state._editProductId = productId;
+  state._addCatId = null;
+  state.activeView = 'addProduct';
+  document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
+  renderAll();
+}
+
+function cancelAddProduct() {
+  state.activeView = 'categories';
+  renderAll();
+}
+
+function saveInlineProduct() {
+  const name = document.getElementById('ipName').value.trim();
+  if (!name) { showToast('❗ Bitte einen Namen eingeben'); return; }
+  const tags = [...document.querySelectorAll('#ipTags .tag-sel-item.selected')].map(el => el.textContent);
+  const catId = document.getElementById('ipCategory').value;
+  const qty = document.getElementById('ipQty').value;
+  const unit = document.getElementById('ipUnit').value;
+
+  if (state._editProductId) {
+    const p = state.products.find(x => x.id === state._editProductId);
+    if (p) {
+      const oldQty = parseFloat(p.qty||0);
+      const newQty = parseFloat(qty)||0;
+      if (oldQty > newQty) logConsumption(p.name, oldQty - newQty, unit);
+      p.name = name; p.qty = qty; p.unit = unit;
+      p.minQty = document.getElementById('ipMinQty').value;
+      p.mhd = document.getElementById('ipMHD').value;
+      p.tags = tags; p.note = document.getElementById('ipNote').value.trim();
+      p.emoji = document.getElementById('ipEmoji').value || '📦';
+      p.catId = catId; p.updatedAt = Date.now();
+    }
+  } else {
+    state.products.push({
+      id: 'p' + Date.now(), name, qty, unit,
+      minQty: document.getElementById('ipMinQty').value,
+      mhd: document.getElementById('ipMHD').value,
+      tags, note: document.getElementById('ipNote').value.trim(),
+      emoji: document.getElementById('ipEmoji').value || '📦',
+      catId, updatedAt: Date.now()
+    });
+  }
+  state.activeCat = catId;
+  save(); syncSave();
+  state.activeView = 'categories';
+  renderAll();
+  showToast(state._editProductId ? '✅ Gespeichert' : '✅ Produkt hinzugefügt');
+}
+
+function deleteInlineProduct() {
+  if (!confirm('Produkt wirklich löschen?')) return;
+  state.products = state.products.filter(p => p.id !== state._editProductId);
+  save(); syncSave();
+  state.activeView = 'categories';
+  renderAll();
+  showToast('🗑️ Produkt gelöscht');
 }
 
 function renderShare() {
@@ -1543,15 +1692,20 @@ function dropProduct(event, targetId) {
 // ===== FAB =====
 function fabAddProduct() {
   const catId = state.activeCat || (state.categories[0] && state.categories[0].id) || '';
-  if (!catId) { showToast('❗ Bitte zuerst eine Kategorie anlegen'); return; }
-  openProductModal(null, catId);
+  if (!catId) { showToast('❗ Keine Kategorie gefunden'); return; }
+  // Switch to inline add view
+  state.activeView = 'addProduct';
+  state._addCatId = catId;
+  state._editProductId = null;
+  document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
+  renderAll();
 }
 
 function updateFabVisibility() {
   const fab = document.getElementById('fabAdd');
   if (!fab) return;
   // Hide on stats and share views
-  fab.style.display = ['stats','share'].includes(state.activeView) ? 'none' : 'flex';
+  fab.style.display = ['stats','share','addProduct'].includes(state.activeView) ? 'none' : 'flex';
 }
 
 // ===== HELPERS =====
