@@ -678,12 +678,16 @@ let _syncCode = '';
 function startSupaSync(code) {
   _syncCode = code;
   stopSupaSync();
+  // Initial push so this device's data is immediately available to others
+  supaPush(code);
   _supaInterval = setInterval(async () => {
     const remote = await supaPull(code);
     if (!remote || !remote.ts) return;
     if (remote.ts <= _lastSupaTs) return;
     _lastSupaTs = remote.ts;
     mergeRemote(remote);
+    save();
+    renderAll();
     showSyncStatus();
   }, 5000);
 }
@@ -719,6 +723,11 @@ function save() {
   try {
     localStorage.setItem('vorrat_state', JSON.stringify(state));
   } catch(e) {}
+  // Auto-push to Supabase if sync is active
+  const code = localStorage.getItem('vorrat_shareCode');
+  if (code && _syncCode) {
+    supaPush(code);
+  }
 }
 function load() {
   try {
@@ -1901,31 +1910,11 @@ function getPsCutoff() {
   return cutoff;
 }
 
-// ===== REAL-TIME SYNC =====
+// ===== REAL-TIME SYNC (Supabase only - window.storage removed) =====
 let _syncInterval = null;
 let _lastSyncTs = 0;
-
-function startAutoSync() {
-  stopAutoSync();
-  _syncInterval = setInterval(async () => {
-    const code = localStorage.getItem('vorrat_shareCode');
-    if (!code) return;
-    try {
-      const result = await window.storage.get('vorrat_shared_' + code, true);
-      if (!result || !result.value) return;
-      const data = JSON.parse(result.value);
-      if (!data.ts || data.ts <= _lastSyncTs) return;
-      // Remote is newer — merge
-      _lastSyncTs = data.ts;
-      mergeRemote(data);
-    } catch(e) {}
-  }, 8000); // poll every 8 seconds
-}
-
-function stopAutoSync() {
-  if (_syncInterval) clearInterval(_syncInterval);
-  _syncInterval = null;
-}
+function startAutoSync() { /* no-op: Supabase handles all sync */ }
+function stopAutoSync() { if(_syncInterval){clearInterval(_syncInterval);_syncInterval=null;} }
 
 function mergeRemote(remote) {
   // Products: remote wins for newer updatedAt, keep local additions
