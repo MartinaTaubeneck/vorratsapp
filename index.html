@@ -685,10 +685,7 @@ function startSupaSync(code) {
     if (!remote || !remote.ts) return;
     if (remote.ts <= _lastSupaTs) return;
     _lastSupaTs = remote.ts;
-    mergeRemote(remote);
-    save();
-    renderAll();
-    showSyncStatus();
+    mergeRemote(remote); // mergeRemote handles save+render internally
   }, 5000);
 }
 
@@ -723,10 +720,11 @@ function save() {
   try {
     localStorage.setItem('vorrat_state', JSON.stringify(state));
   } catch(e) {}
-  // Auto-push to Supabase if sync is active
+  // Auto-push to Supabase if sync is active (with small debounce)
   const code = localStorage.getItem('vorrat_shareCode');
   if (code && _syncCode) {
-    supaPush(code);
+    if (window._pushTimer) clearTimeout(window._pushTimer);
+    window._pushTimer = setTimeout(() => supaPush(code), 500);
   }
 }
 function load() {
@@ -1958,7 +1956,8 @@ function mergeRemote(remote) {
   // Tags: union
   remote.tags.forEach(t => { if (!state.tags.includes(t)) state.tags.push(t); });
 
-  save();
+  // Save locally only (no push — avoids recursive sync loop)
+  try { localStorage.setItem('vorrat_state', JSON.stringify(state)); } catch(e) {}
   renderAll();
   showSyncStatus();
 }
