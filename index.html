@@ -611,12 +611,18 @@
 <div class="toast" id="toast"></div>
 
 <script>
-// ===== SUPABASE CONFIG =====
+// ===== SUPABASE SYNC =====
 const SUPA_URL = 'https://atigpxytzswtgpfzrzjt.supabase.co';
 const SUPA_KEY = 'sb_publishable_EYErv4BJIHMoDwaDU1We4A_ZyKd4F-q';
 const SUPA_TABLE = 'vorrat_sync';
 
-// ===== SUPABASE HELPERS =====
+let _syncCode = '';
+let _syncInterval = null;
+let _lastRemoteTs = 0;
+let _pushing = false;
+let _pushTimer = null;
+
+// Low-level Supabase request
 async function supaRequest(method, path, body) {
   try {
     const res = await fetch(SUPA_URL + '/rest/v1/' + path, {
@@ -625,73 +631,111 @@ async function supaRequest(method, path, body) {
         'apikey': SUPA_KEY,
         'Authorization': 'Bearer ' + SUPA_KEY,
         'Content-Type': 'application/json',
-        'Prefer': method === 'POST' ? 'resolution=merge-duplicates,return=representation' : 'return=representation'
+        'Prefer': method === 'POST' ? 'resolution=merge-duplicates' : ''
       },
       body: body ? JSON.stringify(body) : undefined
     });
-    if (!res.ok) {
-      const err = await res.text();
-      console.warn('Supabase error:', res.status, err);
-      return null;
-    }
-    const text = await res.text();
-    return text ? JSON.parse(text) : null;
-  } catch(e) {
-    console.warn('Supabase fetch failed:', e);
-    return null;
-  }
+    if (!res.ok) { console.warn('Supa error', res.status, await res.text()); return null; }
+    const txt = await res.text();
+    return txt ? JSON.parse(txt) : [];
+  } catch(e) { console.warn('Supa fetch failed', e); return null; }
 }
 
-async function supaEnsureTable() {
-  // Try to read — if table missing we show instructions
-  const res = await supaRequest('GET', SUPA_TABLE + '?limit=1');
-  return res !== null;
-}
-
-async function supaPush(shareCode) {
+// Push ALL local data to Supabase
+async function supaPush(code) {
+  if (_pushing) return;
+  _pushing = true;
+  const ts = Date.now();
   const payload = {
-    code: shareCode,
-    data: JSON.stringify({
-      products: state.products,
-      categories: state.categories,
-      tags: state.tags,
-      consumption: state.consumption,
-      ts: Date.now()
-    }),
+    code: code,
+    data: JSON.stringify({ products: state.products, categories: state.categories, tags: state.tags, consumption: state.consumption, ts }),
     updated_at: new Date().toISOString()
   };
-  const result = await supaRequest('POST', SUPA_TABLE, payload);
-  return result !== null;
+  await supaRequest('POST', SUPA_TABLE, payload);
+  _pushing = false;
 }
 
-async function supaPull(shareCode) {
-  const res = await supaRequest('GET', SUPA_TABLE + '?code=eq.' + encodeURIComponent(shareCode) + '&limit=1');
+// Pull data from Supabase
+async function supaPull(code) {
+  const res = await supaRequest('GET', SUPA_TABLE + '?code=eq.' + encodeURIComponent(code) + '&limit=1');
   if (!res || !res.length) return null;
   try { return JSON.parse(res[0].data); } catch(e) { return null; }
 }
 
-// ===== REALTIME SYNC via polling =====
-let _supaInterval = null;
-let _lastSupaTs = 0;
-let _syncCode = '';
+// Apply remote data — simple last-write-wins, no complex merge
+function applyRemote(remote) {
+  if (!remote || !remote.ts) return;
+  // Replace everything with remote data (last-write-wins)
+  if (remote.products) state.products = remote.products;
+  if (remote.categories && remote.categories.length) state.categories = remote.categories;
+  if (remote.tags && remote.tags.length) state.tags = remote.tags;
+  if (remote.consumption) {
+    state.consumption = remote.consumption;
+    if (state.consumption.length > 2000) state.consumption = state.consumption.slice(-2000);
+  }
+  _lastRemoteTs = remote.ts;
+  // Save locally without triggering another push
+  try { localStorage.setItem('vorrat_state', JSON.stringify(state)); } catch(e) {}
+  renderAll();
+  showSyncBadge('✅ Synced', 'green');
+}
 
+// Show sync badge
+function showSyncBadge(text, color) {
+  const el = document.getElementById('syncBadge');
+  if (!el) return;
+  el.textContent = text;
+  el.style.color = color === 'green' ? '#2d7a27' : color === 'red' ? '#c0392b' : '#d4860a';
+}
+
+function showSyncStatus() {
+  const el = document.getElementById('syncStatus');
+  if (el) { el.style.display = 'flex'; setTimeout(() => el.style.display = 'none', 3000); }
+}
+
+// Start polling
 function startSupaSync(code) {
   _syncCode = code;
   stopSupaSync();
-  // Initial push so this device's data is immediately available to others
+  // Push current data immediately
   supaPush(code);
-  _supaInterval = setInterval(async () => {
+  showSyncBadge('🔄 Sync aktiv', 'green');
+  // Poll every 4 seconds
+  _syncInterval = setInterval(async () => {
     const remote = await supaPull(code);
     if (!remote || !remote.ts) return;
-    if (remote.ts <= _lastSupaTs) return;
-    _lastSupaTs = remote.ts;
-    mergeRemote(remote); // mergeRemote handles save+render internally
-  }, 5000);
+    // Only apply if remote is strictly newer than what we last received
+    if (remote.ts > _lastRemoteTs) {
+      applyRemote(remote);
+    }
+  }, 4000);
 }
 
 function stopSupaSync() {
-  if (_supaInterval) clearInterval(_supaInterval);
-  _supaInterval = null;
+  if (_syncInterval) { clearInterval(_syncInterval); _syncInterval = null; }
+}
+
+// Called from save() — debounced push
+function schedulePush() {
+  if (!_syncCode) return;
+  if (_pushTimer) clearTimeout(_pushTimer);
+  _pushTimer = setTimeout(() => supaPush(_syncCode), 800);
+}
+
+async function syncLoad(shareCode) {
+  showToast('⏳ Verbinde…');
+  const remote = await supaPull(shareCode);
+  if (remote) {
+    applyRemote(remote);
+    showToast('✅ Daten synchronisiert');
+  } else {
+    showToast('⚠️ Keine Daten gefunden');
+  }
+}
+
+async function supaEnsureTable() {
+  const res = await supaRequest('GET', SUPA_TABLE + '?limit=1');
+  return res !== null;
 }
 
 // ===== STATE =====
@@ -720,12 +764,7 @@ function save() {
   try {
     localStorage.setItem('vorrat_state', JSON.stringify(state));
   } catch(e) {}
-  // Auto-push to Supabase if sync is active (with small debounce)
-  const code = localStorage.getItem('vorrat_shareCode');
-  if (code && _syncCode) {
-    if (window._pushTimer) clearTimeout(window._pushTimer);
-    window._pushTimer = setTimeout(() => supaPush(code), 500);
-  }
+  schedulePush();
 }
 function load() {
   try {
@@ -755,30 +794,7 @@ function load() {
   }
 }
 
-// ===== SHARED STORAGE (simulated via key-based storage) =====
-async function syncSave() {
-  const shareCode = localStorage.getItem('vorrat_shareCode');
-  if (!shareCode) return;
-  const ok = await supaPush(shareCode);
-  if (ok) { _lastSupaTs = Date.now(); showSyncStatus(); }
-}
-
-async function syncLoad(shareCode) {
-  showToast('⏳ Verbinde mit Supabase…');
-  const data = await supaPull(shareCode);
-  if (data) {
-    if (data.products) state.products = data.products;
-    if (data.categories) state.categories = data.categories;
-    if (data.tags) state.tags = data.tags;
-    if (data.consumption) state.consumption = data.consumption;
-    _lastSupaTs = data.ts || 0;
-    save(); renderAll();
-    showToast('✅ Daten synchronisiert');
-  } else {
-    showToast('⚠️ Keine Daten gefunden – Code prüfen?');
-  }
-}
-
+// showSyncStatus kept for compatibility
 function showSyncStatus() {
   const el = document.getElementById('syncStatus');
   if (el) { el.style.display = 'flex'; setTimeout(() => el.style.display = 'none', 3000); }
@@ -1373,7 +1389,7 @@ function saveInlineProduct() {
     });
   }
   state.activeCat = catId;
-  save(); syncSave();
+  save();
   state.activeView = 'categories';
   renderAll();
   showToast(state._editProductId ? '✅ Gespeichert' : '✅ Produkt hinzugefügt');
@@ -1382,7 +1398,7 @@ function saveInlineProduct() {
 function deleteInlineProduct() {
   if (!confirm('Produkt wirklich löschen?')) return;
   state.products = state.products.filter(p => p.id !== state._editProductId);
-  save(); syncSave();
+  save();
   state.activeView = 'categories';
   renderAll();
   showToast('🗑️ Produkt gelöscht');
@@ -1482,14 +1498,14 @@ function saveProduct() {
       catId, order: state.products.length
     });
   }
-  save(); syncSave(); closeModal('productModal'); renderAll();
+  save(); closeModal('productModal'); renderAll();
   showToast(state.editingProductId ? '✅ Gespeichert' : '✅ Produkt hinzugefügt');
 }
 
 function deleteProduct() {
   if (!confirm('Produkt wirklich löschen?')) return;
   state.products = state.products.filter(p => p.id !== state.editingProductId);
-  save(); syncSave(); closeModal('productModal'); renderAll();
+  save(); closeModal('productModal'); renderAll();
   showToast('🗑️ Produkt gelöscht');
 }
 
@@ -1500,7 +1516,7 @@ function changeQty(id, delta) {
   const newQty = Math.max(0, old + delta);
   if (delta < 0 && old > 0) logConsumption(p.name, Math.abs(delta), p.unit);
   p.qty = newQty;
-  save(); syncSave(); renderAll();
+  save(); renderAll();
 }
 
 function logConsumption(name, amount, unit) {
@@ -1531,7 +1547,7 @@ function saveCat() {
     state.categories.push({ id, name, emoji });
     state.activeCat = id;
   }
-  save(); syncSave(); closeModal('catModal'); renderAll();
+  save(); closeModal('catModal'); renderAll();
   showToast('✅ Gespeichert');
 }
 
@@ -1540,7 +1556,7 @@ function deleteCat() {
   state.products = state.products.filter(p => p.catId !== state.editingCatId);
   state.categories = state.categories.filter(c => c.id !== state.editingCatId);
   if (state.activeCat === state.editingCatId) state.activeCat = state.categories[0]?.id || '';
-  save(); syncSave(); closeModal('catModal'); renderAll();
+  save(); closeModal('catModal'); renderAll();
   showToast('🗑️ Kategorie gelöscht');
 }
 
@@ -1635,7 +1651,7 @@ async function createShareCode() {
   showToast('⏳ Erstelle Freigabe…');
   const ok = await supaPush(code);
   if (ok) {
-    _lastSupaTs = Date.now();
+    _lastRemoteTs = Date.now();
     startSupaSync(code);
     showToast('✅ Freigabe erstellt!');
   } else {
@@ -1908,58 +1924,11 @@ function getPsCutoff() {
   return cutoff;
 }
 
-// ===== REAL-TIME SYNC (Supabase only - window.storage removed) =====
-let _syncInterval = null;
-let _lastSyncTs = 0;
-function startAutoSync() { /* no-op: Supabase handles all sync */ }
-function stopAutoSync() { if(_syncInterval){clearInterval(_syncInterval);_syncInterval=null;} }
+function startAutoSync() {} function stopAutoSync() {}
 
 function mergeRemote(remote) {
-  // Products: remote wins for newer updatedAt, keep local additions
-  const localIds = new Set(state.products.map(p => p.id));
-  const remoteIds = new Set(remote.products.map(p => p.id));
-
-  // Add remote products not in local
-  remote.products.forEach(rp => {
-    if (!localIds.has(rp.id)) {
-      state.products.push(rp);
-    } else {
-      // Update if remote is newer
-      const lp = state.products.find(p => p.id === rp.id);
-      if (lp && (rp.updatedAt||0) > (lp.updatedAt||0)) {
-        Object.assign(lp, rp);
-      }
-    }
-  });
-
-  // Merge consumption (add new remote entries by id)
-  const localConsIds = new Set(state.consumption.map(c => c.id).filter(Boolean));
-  remote.consumption.forEach(rc => {
-    if (rc.id && !localConsIds.has(rc.id)) {
-      state.consumption.push(rc);
-    }
-  });
-  // Sort consumption by date
-  state.consumption.sort((a,b) => new Date(a.date) - new Date(b.date));
-  if (state.consumption.length > 2000) state.consumption = state.consumption.slice(-2000);
-
-  // Categories: merge by id
-  const localCatIds = new Set(state.categories.map(c => c.id));
-  remote.categories.forEach(rc => {
-    if (!localCatIds.has(rc.id)) state.categories.push(rc);
-    else {
-      const lc = state.categories.find(c => c.id === rc.id);
-      if (lc && (rc.updatedAt||0) > (lc.updatedAt||0)) Object.assign(lc, rc);
-    }
-  });
-
-  // Tags: union
-  remote.tags.forEach(t => { if (!state.tags.includes(t)) state.tags.push(t); });
-
-  // Save locally only (no push — avoids recursive sync loop)
-  try { localStorage.setItem('vorrat_state', JSON.stringify(state)); } catch(e) {}
-  renderAll();
-  showSyncStatus();
+  // Simplified: just apply remote data (last-write-wins)
+  applyRemote(remote);
 }
 
 // Patch logConsumption to add IDs for merge tracking
