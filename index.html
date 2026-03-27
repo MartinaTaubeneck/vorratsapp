@@ -700,15 +700,28 @@ function startSupaSync(code) {
   // Push current data immediately
   supaPush(code);
   showSyncBadge('🔄 Sync aktiv', 'green');
-  // Poll every 4 seconds
+  // Poll every 5 seconds — ALWAYS apply remote if updated_at changed
+  let _lastUpdatedAt = '';
   _syncInterval = setInterval(async () => {
-    const remote = await supaPull(code);
-    if (!remote || !remote.ts) return;
-    // Only apply if remote is strictly newer than what we last received
-    if (remote.ts > _lastRemoteTs) {
+    try {
+      // Fetch raw row to get updated_at
+      const res = await fetch(SUPA_URL + '/rest/v1/' + SUPA_TABLE +
+        '?code=eq.' + encodeURIComponent(code) +
+        '&select=data,updated_at&limit=1', {
+        headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY }
+      });
+      if (!res.ok) return;
+      const rows = await res.json();
+      if (!rows || !rows.length) return;
+      const row = rows[0];
+      // Only apply if updated_at changed (string comparison)
+      if (row.updated_at === _lastUpdatedAt) return;
+      _lastUpdatedAt = row.updated_at;
+      const remote = JSON.parse(row.data);
+      if (!remote) return;
       applyRemote(remote);
-    }
-  }, 4000);
+    } catch(e) { console.warn('Poll error', e); }
+  }, 5000);
 }
 
 function stopSupaSync() {
@@ -1951,7 +1964,10 @@ if (!state.activeCat || !state.categories.find(c => c.id === state.activeCat)) {
 
 // Start Supabase sync if code present
 const _initCode = localStorage.getItem('vorrat_shareCode');
-if (_initCode) { startSupaSync(_initCode); }
+if (_initCode) { 
+  // On reload: first pull latest data, then start polling
+  syncLoad(_initCode).then(() => startSupaSync(_initCode));
+}
 
 // Register Service Worker
 if ('serviceWorker' in navigator) {
