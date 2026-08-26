@@ -397,16 +397,18 @@
 
   /* DRAG handle */
   .drag-handle { cursor: grab; color: var(--text3); font-size: 14px; padding: 4px; }
-  .reorder-controls { display: flex; flex-direction: column; gap: 2px; }
+  .reorder-controls { display: flex; flex-direction: column; gap: 3px; flex-shrink: 0; }
   .reorder-btn {
-    width: 22px; height: 18px; border-radius: 5px;
+    width: 32px; height: 26px; border-radius: 6px;
     border: 1px solid var(--border); background: var(--bg2);
-    cursor: pointer; font-size: 9px; color: var(--text2);
+    cursor: pointer; font-size: 12px; color: var(--text2);
     display: flex; align-items: center; justify-content: center;
     transition: all 0.15s; line-height: 1; padding: 0;
+    touch-action: manipulation; -webkit-tap-highlight-color: transparent;
   }
   .reorder-btn:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .reorder-btn:disabled { opacity: 0.3; cursor: default; }
+  .reorder-btn:active:not(:disabled) { background: var(--accent); color: #fff; transform: scale(0.92); }
+  .reorder-btn:disabled { opacity: 0.25; cursor: default; }
   .product-card.dragging { opacity: 0.4; }
   .product-card.dragover { border-color: var(--accent); border-style: dashed; }
 
@@ -685,7 +687,7 @@ async function supaPull(code) {
 function applyRemote(remote) {
   if (!remote || !remote.ts) return;
   // Replace everything with remote data (last-write-wins)
-  if (remote.products) state.products = remote.products;
+  if (remote.products) state.products = remote.products.filter(p => p && p.id && p.name);
   if (remote.categories && remote.categories.length) state.categories = remote.categories;
   if (remote.tags && remote.tags.length) state.tags = remote.tags;
   if (remote.consumption) {
@@ -792,6 +794,30 @@ const SUBCAT_EMOJI = {
   'Nudeln':'🍝','Soßen':'🍶','Dosen':'🥫','Eingemachtes':'🫙','Zucker, Mehl & co':'🌾','Gewürze':'🧂','Marmelade':'🍓',
   'Fleisch':'🥩','Pizza & co.':'🍕','Brot & Semmeln':'🥖','Gemüse':'🥦','Sonstiges':'📦','Vorgekochte Gerichte':'🍲',
 };
+// Existing products predate subcategories, so every subcategory would start out
+// empty. Make a best guess from the product's tags and its name — only for
+// products that don't have a subcategory yet, so manual choices are never
+// overwritten. Anything unmatched stays under "Ohne Zuordnung".
+const SUBCAT_HINTS = {
+  c1: {
+    'Nudeln': ['nudel','spaghetti','penne','spätzle','spaetzle','makkaroni','fusilli','tagliatelle','lasagne','farfalle','reis'],
+    'Soßen': ['soße','sosse','sauce','ketchup','pesto','passata','senf','mayo'],
+    'Dosen': ['dose','konserve','konserven','büchse'],
+    'Eingemachtes': ['eingekocht','eingemacht','einkoch','kompott','eingelegt'],
+    'Zucker, Mehl & co': ['mehl','zucker','grieß','griess','stärke','staerke','backpulver','hefe','haferflocken','salz'],
+    'Gewürze': ['gewürz','gewuerz','pfeffer','paprikapulver','curry','oregano','basilikum','zimt','vanille'],
+    'Marmelade': ['marmelade','konfitüre','konfituere','gelee','honig'],
+  },
+  c2: {
+    'Fleisch': ['fleisch','hack','wurst','schnitzel','hähnchen','haehnchen','hühner','rind','schwein','gulasch','steak'],
+    'Pizza & co.': ['pizza','baguette','flammkuchen','pommes'],
+    'Brot & Semmeln': ['brot','semmel','brötchen','broetchen','laib','toast','baguettebrot'],
+    'Gemüse': ['gemüse','gemuese','erbsen','spinat','bohnen','karotten','möhren','moehren','brokkoli','blumenkohl','rahmgemüse'],
+    'Vorgekochte Gerichte': ['eintopf','suppe','auflauf','gericht','vorgekocht','gulaschsuppe','curry'],
+    'Sonstiges': [],
+  },
+};
+
 function subcatOptionsHtml(catId, selected) {
   const list = SUBCATS[catId];
   if (!list) return '';
@@ -840,6 +866,12 @@ function load() {
       state = Object.assign(state, parsed);
     }
   } catch(e) {}
+  // Repair: remove empty/broken product entries (could have been left behind
+  // by an earlier faulty reorder) so they can't break rendering or clicking.
+  if (Array.isArray(state.products)) {
+    state.products = state.products.filter(p => p && p.id && p.name);
+  }
+  autoAssignSubcats();
   // Always ensure default categories exist
   if (!state.categories || state.categories.length === 0) {
     state.categories = [
@@ -929,19 +961,69 @@ function renderMain() {
 function renderSubcatBar(catId) {
   const subcats = SUBCATS[catId];
   if (!subcats || !subcats.length) return '';
+  const inCat = state.products.filter(p => p && p.catId === catId);
+  const countFor = sc => inCat.filter(p => p.subcat === sc).length;
+  const unassigned = inCat.filter(p => !p.subcat).length;
+
   let html = `<div class="search-filter" style="margin-bottom:10px">
-    <span class="filter-chip${state.activeSubcat==='all'?' active':''}" onclick="setActiveSubcat('all')">Alle</span>`;
+    <button type="button" class="filter-chip${state.activeSubcat==='all'?' active':''}" data-subcat="all">Alle <span style="opacity:.7">${inCat.length}</span></button>`;
   subcats.forEach(sc => {
-    html += `<span class="filter-chip${state.activeSubcat===sc?' active':''}" onclick="setActiveSubcat('${sc.replace(/'/g,"\\'")}')">${SUBCAT_EMOJI[sc]||''} ${sc}</span>`;
+    const n = countFor(sc);
+    html += `<button type="button" class="filter-chip${state.activeSubcat===sc?' active':''}" data-subcat="${escAttr(sc)}"${n===0?' style="opacity:.5"':''}>${SUBCAT_EMOJI[sc]||''} ${sc} <span style="opacity:.7">${n}</span></button>`;
   });
+  if (unassigned > 0) {
+    html += `<button type="button" class="filter-chip${state.activeSubcat==='__none__'?' active':''}" data-subcat="__none__">📥 Ohne Zuordnung <span style="opacity:.7">${unassigned}</span></button>`;
+  }
   html += `</div>`;
   return html;
+}
+
+function escAttr(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+}
+
+function autoAssignSubcats() {
+  if (!Array.isArray(state.products)) return;
+  state.products.forEach(p => {
+    if (!p || p.subcat) return;              // never overwrite an existing choice
+    const valid = SUBCATS[p.catId];
+    if (!valid) return;
+
+    // 1) exact match against an existing tag (tags like "Nudeln", "Fleisch" already exist)
+    const tagHit = (p.tags || []).find(t => valid.includes(t));
+    if (tagHit) { p.subcat = tagHit; return; }
+
+    const hints = SUBCAT_HINTS[p.catId] || {};
+    const name = (p.name || '').toLowerCase();
+
+    // 2) keyword match against the product NAME first — the name is the most
+    //    specific signal ("Erdbeermarmelade" is Marmelade, not just Eingemachtes)
+    for (const sc of valid) {
+      if ((hints[sc] || []).some(wd => name.includes(wd))) { p.subcat = sc; return; }
+    }
+
+    // 3) fall back to tags and note
+    const rest = ((p.tags || []).join(' ') + ' ' + (p.note || '')).toLowerCase();
+    for (const sc of valid) {
+      if ((hints[sc] || []).some(wd => rest.includes(wd))) { p.subcat = sc; return; }
+    }
+    // otherwise leave unassigned — reachable via the "Ohne Zuordnung" chip
+  });
 }
 
 function setActiveSubcat(sc) {
   state.activeSubcat = sc;
   renderAll();
 }
+
+// Event delegation: works reliably on touch devices, and survives re-rendering.
+document.addEventListener('click', function(e) {
+  const chip = e.target.closest ? e.target.closest('[data-subcat]') : null;
+  if (!chip) return;
+  e.preventDefault();
+  e.stopPropagation();
+  setActiveSubcat(chip.getAttribute('data-subcat'));
+});
 
 function renderAlerts(catId) {
   const today = new Date(); today.setHours(0,0,0,0);
@@ -974,7 +1056,8 @@ function getFilteredProducts(catId) {
   let prods = state.products.filter(p => catId ? p.catId === catId : true);
 
   if (catId && SUBCATS[catId] && state.activeSubcat && state.activeSubcat !== 'all') {
-    prods = prods.filter(p => p.subcat === state.activeSubcat);
+    if (state.activeSubcat === '__none__') prods = prods.filter(p => !p.subcat);
+    else prods = prods.filter(p => p.subcat === state.activeSubcat);
   }
 
   if (search) {
@@ -1839,13 +1922,18 @@ function moveProduct(id, direction, catId) {
   const idsInOrder = list.map(p => p.id);
   [idsInOrder[idx], idsInOrder[targetIdx]] = [idsInOrder[targetIdx], idsInOrder[idx]];
 
-  // Re-place these items into the same global array slots they already occupy,
-  // now in the (swapped) visual order — this turns "what you see" into the new
-  // manual order, regardless of which sort mode produced the current view.
+  // Snapshot the objects BEFORE touching the array. Looking them up while the
+  // array is being overwritten would find nothing and wipe out the product.
+  const byId = {};
+  state.products.forEach(p => { if (p && p.id) byId[p.id] = p; });
+
+  // The array slots these items currently occupy, in order.
   const globalSlots = [];
-  state.products.forEach((p, i) => { if (idsInOrder.includes(p.id)) globalSlots.push(i); });
+  state.products.forEach((p, i) => { if (p && idsInOrder.includes(p.id)) globalSlots.push(i); });
+
+  // Write the items back into those same slots, now in the new visual order.
   idsInOrder.forEach((pid, i) => {
-    state.products[globalSlots[i]] = state.products.find(p => p.id === pid);
+    if (byId[pid] !== undefined) state.products[globalSlots[i]] = byId[pid];
   });
 
   state.sortMode = 'manual';
