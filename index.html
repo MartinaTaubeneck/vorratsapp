@@ -397,6 +397,16 @@
 
   /* DRAG handle */
   .drag-handle { cursor: grab; color: var(--text3); font-size: 14px; padding: 4px; }
+  .reorder-controls { display: flex; flex-direction: column; gap: 2px; }
+  .reorder-btn {
+    width: 22px; height: 18px; border-radius: 5px;
+    border: 1px solid var(--border); background: var(--bg2);
+    cursor: pointer; font-size: 9px; color: var(--text2);
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s; line-height: 1; padding: 0;
+  }
+  .reorder-btn:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .reorder-btn:disabled { opacity: 0.3; cursor: default; }
   .product-card.dragging { opacity: 0.4; }
   .product-card.dragover { border-color: var(--accent); border-style: dashed; }
 
@@ -509,8 +519,12 @@
       </div>
       <div class="form-group">
         <label class="form-label">Kategorie</label>
-        <select class="form-select" id="pCategory"></select>
+        <select class="form-select" id="pCategory" onchange="updateModalSubcatGroup(this.value)"></select>
       </div>
+    </div>
+    <div class="form-group" id="pSubcatGroup" style="display:none">
+      <label class="form-label">Unterkategorie</label>
+      <select class="form-select" id="pSubcat"></select>
     </div>
     <div class="form-group">
       <label class="form-label">MHD (Mindesthaltbarkeitsdatum)</label>
@@ -621,6 +635,8 @@ let _syncInterval = null;
 let _lastRemoteTs = 0;
 let _pushing = false;
 let _pushTimer = null;
+let _lastLocalChangeTs = 0;   // set whenever the user changes something locally
+let _lastPushedTs = 0;        // set once that change has actually reached Supabase
 
 // Low-level Supabase request
 async function supaRequest(method, path, body) {
@@ -643,7 +659,7 @@ async function supaRequest(method, path, body) {
 
 // Push ALL local data to Supabase
 async function supaPush(code) {
-  if (_pushing) return;
+  if (_pushing) { _pushAgainQueued = true; return; }
   _pushing = true;
   const ts = Date.now();
   const payload = {
@@ -651,9 +667,12 @@ async function supaPush(code) {
     data: JSON.stringify({ products: state.products, categories: state.categories, tags: state.tags, consumption: state.consumption, ts }),
     updated_at: new Date().toISOString()
   };
-  await supaRequest('POST', SUPA_TABLE, payload);
+  const res = await supaRequest('POST', SUPA_TABLE, payload);
+  if (res !== null) _lastPushedTs = ts;
   _pushing = false;
+  if (_pushAgainQueued) { _pushAgainQueued = false; supaPush(code); }
 }
+let _pushAgainQueued = false;
 
 // Pull data from Supabase
 async function supaPull(code) {
@@ -719,6 +738,10 @@ function startSupaSync(code) {
       _lastUpdatedAt = row.updated_at;
       const remote = JSON.parse(row.data);
       if (!remote) return;
+      // If we have a local change that hasn't reached Supabase yet, applying this
+      // (older) remote snapshot would overwrite it and the number would "jump back".
+      // Push our pending change instead of applying remote in that case.
+      if (_lastLocalChangeTs > _lastPushedTs) { supaPush(_syncCode); return; }
       applyRemote(remote);
     } catch(e) { console.warn('Poll error', e); }
   }, 5000);
@@ -732,16 +755,23 @@ function stopSupaSync() {
 function schedulePush() {
   if (!_syncCode) return;
   if (_pushTimer) clearTimeout(_pushTimer);
-  _pushTimer = setTimeout(() => supaPush(_syncCode), 800);
+  _pushTimer = setTimeout(() => supaPush(_syncCode), 400);
 }
 
-async function syncLoad(shareCode) {
-  showToast('⏳ Verbinde…');
+async function syncLoad(shareCode, isStartup) {
+  if (!isStartup) showToast('⏳ Verbinde…');
   const remote = await supaPull(shareCode);
   if (remote) {
-    applyRemote(remote);
-    showToast('✅ Daten synchronisiert');
-  } else {
+    if (isStartup && remote.ts && remote.ts < _lastLocalChangeTs) {
+      // Local has a change that never made it to Supabase (e.g. app was closed
+      // before the push finished) — keep the local version and push it now,
+      // instead of overwriting it with the older remote copy.
+      supaPush(shareCode);
+    } else {
+      applyRemote(remote);
+    }
+    if (!isStartup) showToast('✅ Daten synchronisiert');
+  } else if (!isStartup) {
     showToast('⚠️ Keine Daten gefunden');
   }
 }
@@ -752,6 +782,26 @@ async function supaEnsureTable() {
 }
 
 // ===== STATE =====
+// ===== SUBCATEGORIES =====
+// Keyed by category id. Only categories listed here get a subcategory picker/filter.
+const SUBCATS = {
+  c1: ['Nudeln', 'Soßen', 'Dosen', 'Eingemachtes', 'Zucker, Mehl & co', 'Gewürze', 'Marmelade'],
+  c2: ['Fleisch', 'Pizza & co.', 'Brot & Semmeln', 'Gemüse', 'Sonstiges', 'Vorgekochte Gerichte'],
+};
+const SUBCAT_EMOJI = {
+  'Nudeln':'🍝','Soßen':'🍶','Dosen':'🥫','Eingemachtes':'🫙','Zucker, Mehl & co':'🌾','Gewürze':'🧂','Marmelade':'🍓',
+  'Fleisch':'🥩','Pizza & co.':'🍕','Brot & Semmeln':'🥖','Gemüse':'🥦','Sonstiges':'📦','Vorgekochte Gerichte':'🍲',
+};
+function subcatOptionsHtml(catId, selected) {
+  const list = SUBCATS[catId];
+  if (!list) return '';
+  let html = '<option value="">– keine –</option>';
+  list.forEach(sc => {
+    html += '<option value="' + sc.replace(/"/g,'&quot;') + '"' + (selected===sc?' selected':'') + '>' + (SUBCAT_EMOJI[sc]||'') + ' ' + sc + '</option>';
+  });
+  return html;
+}
+
 let state = {
   categories: [
     {id:'c1', name:'Speisekammer', emoji:'🏠'},
@@ -765,6 +815,7 @@ let state = {
   consumption: [], // {productId, name, date, amount, unit}
   settings: { mhdWarn: 14, darkMode: false },
   activeCat: 'c1',
+  activeSubcat: 'all',
   activeView: 'categories',
   activeFilter: 'all',
   sortMode: 'manual',
@@ -777,6 +828,8 @@ function save() {
   try {
     localStorage.setItem('vorrat_state', JSON.stringify(state));
   } catch(e) {}
+  _lastLocalChangeTs = Date.now();
+  try { localStorage.setItem('vorrat_localTs', String(_lastLocalChangeTs)); } catch(e) {}
   schedulePush();
 }
 function load() {
@@ -837,7 +890,7 @@ function renderTabs() {
     const btn = document.createElement('button');
     btn.className = 'nav-tab' + (state.activeCat === cat.id ? ' active' : '');
     btn.innerHTML = `${cat.emoji} ${cat.name} <span class="badge">${prods.length}</span>`;
-    btn.onclick = () => { state.activeCat = cat.id; renderAll(); };
+    btn.onclick = () => { state.activeCat = cat.id; state.activeSubcat = 'all'; renderAll(); };
     btn.ondblclick = () => openCatModal(cat.id);
     tabs.appendChild(btn);
   });
@@ -867,9 +920,27 @@ function renderMain() {
     </div>
   </div>`;
   html += renderAlerts(cat.id);
+  html += renderSubcatBar(cat.id);
   html += renderSortBar();
   html += renderProductList(cat.id);
   main.innerHTML = html;
+}
+
+function renderSubcatBar(catId) {
+  const subcats = SUBCATS[catId];
+  if (!subcats || !subcats.length) return '';
+  let html = `<div class="search-filter" style="margin-bottom:10px">
+    <span class="filter-chip${state.activeSubcat==='all'?' active':''}" onclick="setActiveSubcat('all')">Alle</span>`;
+  subcats.forEach(sc => {
+    html += `<span class="filter-chip${state.activeSubcat===sc?' active':''}" onclick="setActiveSubcat('${sc.replace(/'/g,"\\'")}')">${SUBCAT_EMOJI[sc]||''} ${sc}</span>`;
+  });
+  html += `</div>`;
+  return html;
+}
+
+function setActiveSubcat(sc) {
+  state.activeSubcat = sc;
+  renderAll();
 }
 
 function renderAlerts(catId) {
@@ -901,6 +972,10 @@ function getFilteredProducts(catId) {
   const warnDate = new Date(today); warnDate.setDate(warnDate.getDate() + warn);
 
   let prods = state.products.filter(p => catId ? p.catId === catId : true);
+
+  if (catId && SUBCATS[catId] && state.activeSubcat && state.activeSubcat !== 'all') {
+    prods = prods.filter(p => p.subcat === state.activeSubcat);
+  }
 
   if (search) {
     prods = prods.filter(p =>
@@ -952,9 +1027,12 @@ function renderProductList(catId) {
     if (mhdClass === 'warn') cardClass += ' expiring-soon';
     if (mhdClass === 'bad') cardClass += ' expired';
 
-    html += `<div class="${cardClass}" data-id="${p.id}" draggable="true" ondragstart="dragStart(event,'${p.id}')" ondragover="dragOver(event)" ondrop="dropProduct(event,'${p.id}')">
+    html += `<div class="${cardClass}" data-id="${p.id}">
       <div class="product-row1">
-        <div class="drag-handle" title="Ziehen zum Sortieren">⠿</div>
+        <div class="reorder-controls" onclick="event.stopPropagation()">
+          <button class="reorder-btn" ${i===0?'disabled':''} onclick="moveProduct('${p.id}',-1,'${catId}')" title="Nach oben">▲</button>
+          <button class="reorder-btn" ${i===prods.length-1?'disabled':''} onclick="moveProduct('${p.id}',1,'${catId}')" title="Nach unten">▼</button>
+        </div>
         <div class="product-icon">${p.emoji || '📦'}</div>
         <div class="product-info" onclick="openInlineEdit('${p.id}')">
           <div class="product-name">${p.name}</div>
@@ -963,7 +1041,7 @@ function renderProductList(catId) {
             ${p.minQty && isLow ? `<span style="color:var(--yellow);font-size:12px">⚠️ Niedrig</span>` : ''}
             ${mhdText ? `<span class="product-mhd ${mhdClass}">${mhdText}</span>` : ''}
           </div>
-          ${p.tags && p.tags.length ? `<div class="product-tags">${p.tags.map(t=>`<span class="tag-pill">${t}</span>`).join('')}</div>` : ''}
+          ${p.subcat || (p.tags && p.tags.length) ? `<div class="product-tags">${p.subcat ? `<span class="tag-pill" style="background:var(--accent-bg);color:var(--accent)">${SUBCAT_EMOJI[p.subcat]||''} ${p.subcat}</span>` : ''}${(p.tags||[]).map(t=>`<span class="tag-pill">${t}</span>`).join('')}</div>` : ''}
           ${p.note ? `<div class="product-note">"${p.note}"</div>` : ''}
         </div>
         <div class="product-controls" onclick="event.stopPropagation()">
@@ -988,7 +1066,7 @@ function renderAllProducts() {
   const warn = parseInt(state.settings.mhdWarn) || 14;
   const warnDate = new Date(today); warnDate.setDate(warnDate.getDate() + warn);
 
-  prods.forEach(p => {
+  prods.forEach((p, i) => {
     const qty = parseFloat(p.qty) || 0;
     const isEmpty = qty === 0;
     const cat = state.categories.find(c => c.id === p.catId);
@@ -999,17 +1077,21 @@ function renderAllProducts() {
       else if (mhdDate <= warnDate) { mhdClass = 'warn'; mhdText = `⚠️ ${formatDate(p.mhd)}`; }
       else { mhdText = formatDate(p.mhd); }
     }
-    html += `<div class="product-card${isEmpty?' empty':''}" onclick="openInlineEdit('${p.id}')">
+    html += `<div class="product-card${isEmpty?' empty':''}">
       <div class="product-row1">
+        <div class="reorder-controls" onclick="event.stopPropagation()">
+          <button class="reorder-btn" ${i===0?'disabled':''} onclick="moveProduct('${p.id}',-1,null)" title="Nach oben">▲</button>
+          <button class="reorder-btn" ${i===prods.length-1?'disabled':''} onclick="moveProduct('${p.id}',1,null)" title="Nach unten">▼</button>
+        </div>
         <div class="product-icon">${p.emoji||'📦'}</div>
-        <div class="product-info">
+        <div class="product-info" onclick="openInlineEdit('${p.id}')">
           <div class="product-name">${p.name}</div>
           <div class="product-meta">
             <span class="product-qty${isEmpty?' zero':''}">${qty} ${p.unit||'Stück'}</span>
             ${cat ? `<span class="tag-pill">${cat.emoji} ${cat.name}</span>` : ''}
             ${mhdText ? `<span class="product-mhd ${mhdClass}">${mhdText}</span>` : ''}
           </div>
-          ${p.tags && p.tags.length ? `<div class="product-tags">${p.tags.map(t=>`<span class="tag-pill">${t}</span>`).join('')}</div>` : ''}
+          ${p.subcat || (p.tags && p.tags.length) ? `<div class="product-tags">${p.subcat ? `<span class="tag-pill" style="background:var(--accent-bg);color:var(--accent)">${SUBCAT_EMOJI[p.subcat]||''} ${p.subcat}</span>` : ''}${(p.tags||[]).map(t=>`<span class="tag-pill">${t}</span>`).join('')}</div>` : ''}
           ${p.note ? `<div class="product-note">"${p.note}"</div>` : ''}
         </div>
         <div class="product-controls" onclick="event.stopPropagation()">
@@ -1333,8 +1415,12 @@ function renderInlineProductForm() {
       </div>
       <div class="form-group" style="flex:1">
         <label class="form-label">Kategorie</label>
-        <select class="form-select" id="ipCategory">${catOptions}</select>
+        <select class="form-select" id="ipCategory" onchange="updateInlineSubcatGroup(this.value)">${catOptions}</select>
       </div>
+    </div>
+    <div class="form-group" id="ipSubcatGroup" style="${SUBCATS[p?p.catId:catId]?'':'display:none'}">
+      <label class="form-label">Unterkategorie</label>
+      <select class="form-select" id="ipSubcat">${subcatOptionsHtml(p?p.catId:catId, p?p.subcat:'')}</select>
     </div>
     <div class="form-group">
       <label class="form-label">MHD</label>
@@ -1365,6 +1451,19 @@ function openInlineEdit(productId) {
   renderAll();
 }
 
+function updateInlineSubcatGroup(catId) {
+  const grp = document.getElementById('ipSubcatGroup');
+  const sel = document.getElementById('ipSubcat');
+  if (!grp || !sel) return;
+  if (SUBCATS[catId]) {
+    grp.style.display = '';
+    sel.innerHTML = subcatOptionsHtml(catId, '');
+  } else {
+    grp.style.display = 'none';
+    sel.innerHTML = '';
+  }
+}
+
 function cancelAddProduct() {
   state.activeView = 'categories';
   renderAll();
@@ -1375,6 +1474,7 @@ function saveInlineProduct() {
   if (!name) { showToast('❗ Bitte einen Namen eingeben'); return; }
   const tags = [...document.querySelectorAll('#ipTags .tag-sel-item.selected')].map(el => el.textContent);
   const catId = document.getElementById('ipCategory').value;
+  const subcat = document.getElementById('ipSubcat')?.value || '';
   const qty = document.getElementById('ipQty').value;
   const unit = document.getElementById('ipUnit').value;
 
@@ -1389,6 +1489,7 @@ function saveInlineProduct() {
       p.mhd = document.getElementById('ipMHD').value;
       p.tags = tags; p.note = document.getElementById('ipNote').value.trim();
       p.emoji = document.getElementById('ipEmoji').value || '📦';
+      p.subcat = subcat;
       p.catId = catId; p.updatedAt = Date.now();
     }
   } else {
@@ -1398,6 +1499,7 @@ function saveInlineProduct() {
       mhd: document.getElementById('ipMHD').value,
       tags, note: document.getElementById('ipNote').value.trim(),
       emoji: document.getElementById('ipEmoji').value || '📦',
+      subcat,
       catId, updatedAt: Date.now()
     });
   }
@@ -1465,6 +1567,7 @@ function openProductModal(productId, catId) {
   // Category select
   const catSel = document.getElementById('pCategory');
   catSel.innerHTML = state.categories.map(c => `<option value="${c.id}"${(p?p.catId:_currentCatForAdd)===c.id?' selected':''}>${c.emoji} ${c.name}</option>`).join('');
+  updateModalSubcatGroup(p ? p.catId : _currentCatForAdd, p ? p.subcat : '');
 
   // Tags
   const ts = document.getElementById('tagSelector');
@@ -1475,6 +1578,19 @@ function openProductModal(productId, catId) {
   openModal('productModal');
 }
 
+function updateModalSubcatGroup(catId, selected) {
+  const grp = document.getElementById('pSubcatGroup');
+  const sel = document.getElementById('pSubcat');
+  if (!grp || !sel) return;
+  if (SUBCATS[catId]) {
+    grp.style.display = '';
+    sel.innerHTML = subcatOptionsHtml(catId, selected || '');
+  } else {
+    grp.style.display = 'none';
+    sel.innerHTML = '';
+  }
+}
+
 function toggleTagSel(el, tag) { el.classList.toggle('selected'); }
 
 function saveProduct() {
@@ -1482,6 +1598,7 @@ function saveProduct() {
   if (!name) { showToast('❗ Bitte einen Namen eingeben'); return; }
   const selectedTags = [...document.querySelectorAll('#tagSelector .tag-sel-item.selected')].map(el => el.textContent);
   const catId = document.getElementById('pCategory').value;
+  const subcat = document.getElementById('pSubcat')?.value || '';
   const qty = document.getElementById('pQty').value;
   const oldQty = state.editingProductId ? parseFloat(state.products.find(p=>p.id===state.editingProductId)?.qty||0) : 0;
   const newQty = parseFloat(qty) || 0;
@@ -1495,6 +1612,7 @@ function saveProduct() {
       p.minQty = document.getElementById('pMinQty').value;
       p.mhd = document.getElementById('pMHD').value;
       p.tags = selectedTags;
+      p.subcat = subcat;
       p.note = document.getElementById('pNote').value.trim();
       p.emoji = document.getElementById('pEmoji').value || '📦';
       p.catId = catId;
@@ -1506,6 +1624,7 @@ function saveProduct() {
       minQty: document.getElementById('pMinQty').value,
       mhd: document.getElementById('pMHD').value,
       tags: selectedTags,
+      subcat,
       note: document.getElementById('pNote').value.trim(),
       emoji: document.getElementById('pEmoji').value || '📦',
       catId, order: state.products.length
@@ -1530,6 +1649,10 @@ function changeQty(id, delta) {
   if (delta < 0 && old > 0) logConsumption(p.name, Math.abs(delta), p.unit);
   p.qty = newQty;
   save(); renderAll();
+  // Push right away (no debounce) — this is the action most likely to be
+  // followed by immediately closing the app, so we can't afford to wait.
+  if (_pushTimer) { clearTimeout(_pushTimer); _pushTimer = null; }
+  if (_syncCode) supaPush(_syncCode);
 }
 
 function logConsumption(name, amount, unit) {
@@ -1702,32 +1825,29 @@ function stopSharing() {
   showToast('🔒 Freigabe beendet');
 }
 
-// ===== DRAG & DROP =====
-let _draggingId = null;
+// ===== REORDER (tap-based, works reliably on touch too) =====
+// Moves a product one step up/down within whatever list it's currently shown
+// in (respecting the active category/subcategory/search/filter), and persists
+// that as the new manual order.
+function moveProduct(id, direction, catId) {
+  const list = getFilteredProducts(catId || null);
+  const idx = list.findIndex(p => p.id === id);
+  if (idx < 0) return;
+  const targetIdx = idx + direction;
+  if (targetIdx < 0 || targetIdx >= list.length) return; // already at the edge
 
-function dragStart(event, id) {
-  _draggingId = id;
-  event.dataTransfer.effectAllowed = 'move';
-  setTimeout(() => { const el = document.querySelector(`[data-id="${id}"]`); if(el) el.classList.add('dragging'); }, 0);
-}
+  const idsInOrder = list.map(p => p.id);
+  [idsInOrder[idx], idsInOrder[targetIdx]] = [idsInOrder[targetIdx], idsInOrder[idx]];
 
-function dragOver(event) {
-  event.preventDefault();
-  event.dataTransfer.dropEffect = 'move';
-  const card = event.currentTarget;
-  document.querySelectorAll('.product-card').forEach(c => c.classList.remove('dragover'));
-  card.classList.add('dragover');
-}
+  // Re-place these items into the same global array slots they already occupy,
+  // now in the (swapped) visual order — this turns "what you see" into the new
+  // manual order, regardless of which sort mode produced the current view.
+  const globalSlots = [];
+  state.products.forEach((p, i) => { if (idsInOrder.includes(p.id)) globalSlots.push(i); });
+  idsInOrder.forEach((pid, i) => {
+    state.products[globalSlots[i]] = state.products.find(p => p.id === pid);
+  });
 
-function dropProduct(event, targetId) {
-  event.preventDefault();
-  document.querySelectorAll('.product-card').forEach(c => c.classList.remove('dragging','dragover'));
-  if (_draggingId === targetId) return;
-  const fromIdx = state.products.findIndex(p => p.id === _draggingId);
-  const toIdx = state.products.findIndex(p => p.id === targetId);
-  if (fromIdx < 0 || toIdx < 0) return;
-  const [item] = state.products.splice(fromIdx, 1);
-  state.products.splice(toIdx, 0, item);
   state.sortMode = 'manual';
   save(); renderAll();
 }
@@ -1964,10 +2084,40 @@ if (!state.activeCat || !state.categories.find(c => c.id === state.activeCat)) {
 
 // Start Supabase sync if code present
 const _initCode = localStorage.getItem('vorrat_shareCode');
-if (_initCode) { 
-  // On reload: first pull latest data, then start polling
-  syncLoad(_initCode).then(() => startSupaSync(_initCode));
+if (_initCode) {
+  _lastLocalChangeTs = parseInt(localStorage.getItem('vorrat_localTs') || '0', 10) || 0;
+  // On reload: first pull latest data (keeping local if it's newer / unpushed), then start polling
+  syncLoad(_initCode, true).then(() => startSupaSync(_initCode));
 }
+
+// Flush any pending (not-yet-pushed) change when the app is closed or backgrounded,
+// so a quantity change made right before closing isn't lost.
+function flushPendingSync() {
+  if (!_syncCode) return;
+  if (_lastLocalChangeTs <= _lastPushedTs) return; // nothing unpushed
+  const ts = Date.now();
+  const payload = {
+    code: _syncCode,
+    data: JSON.stringify({ products: state.products, categories: state.categories, tags: state.tags, consumption: state.consumption, ts }),
+    updated_at: new Date().toISOString()
+  };
+  try {
+    fetch(SUPA_URL + '/rest/v1/' + SUPA_TABLE, {
+      method: 'POST',
+      keepalive: true,
+      headers: {
+        'apikey': SUPA_KEY,
+        'Authorization': 'Bearer ' + SUPA_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates'
+      },
+      body: JSON.stringify(payload)
+    });
+    _lastPushedTs = ts;
+  } catch(e) {}
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushPendingSync(); });
+window.addEventListener('pagehide', flushPendingSync);
 
 // Register Service Worker
 if ('serviceWorker' in navigator) {
